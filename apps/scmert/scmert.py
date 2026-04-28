@@ -9,7 +9,7 @@ import seiscomp.logging
 import mert
 
 info    = seiscomp.logging.info
-debug   = seiscomp.logging.info # XXX
+debug   = seiscomp.logging.debug
 warning = seiscomp.logging.warning
 error   = seiscomp.logging.error
 
@@ -376,7 +376,7 @@ class EventWatch(EventClient):
         self.setRecordStreamEnabled(True)
         self.__wcSize = 500
         self.__icSize = 500
-        self.__minMag = 5.5
+        self.__minMag = 5.8
         self.__yamlFile = None
 
     def initConfiguration(self):
@@ -386,22 +386,22 @@ class EventWatch(EventClient):
         try:
             self.__wcSize = self.configGetInt('waveformCacheSize')
         except Exception:
-            pass
+            warning("waveformCacheSize not configured, using default %d" % self.__wcSize)
 
         try:
             self.__icSize = self.configGetInt('inventoryCacheSize')
         except Exception:
-            pass
+            warning("inventoryCacheSize not configured, using default %d" % self.__icSize)
 
         try:
-            self.__minMag = self.configGetDouble('magnitudeTreshold')
+            self.__minMag = self.configGetDouble('magnitudeThreshold')
         except Exception:
-            pass
+            warning("magnitudeThreshold not configured, using default %.1f" % self.__minMag)
 
         try:
             self.__yamlFile = self.configGetString('yamlConfig')
         except Exception:
-            pass
+            warning("yamlConfig not configured, using built-in process.yaml")
 
         return True
 
@@ -410,7 +410,7 @@ class EventWatch(EventClient):
 
         info("waveformCacheSize:  %d" % self.__wcSize)
         info("inventoryCacheSize: %d" % self.__icSize)
-        info("magnitudeTreshold:  %f" % self.__minMag)
+        info("magnitudeThreshold: %f" % self.__minMag)
         info("yamlConfig:         %s" % self.__yamlFile)
 
         self.__me = mert.Me(self.recordStreamURL(), self.__wcSize, self.__icSize, self.__yamlFile)
@@ -431,11 +431,14 @@ class EventWatch(EventClient):
             return
 
         for i in range(org.stationMagnitudeCount()):
-            mag = org.stationMagnitude(i)
-            if mag.type() == "Me":
+            sm = org.stationMagnitude(i)
+            if sm.type() == "Me":
                 return
 
         smList = []
+        p_count = 0
+
+        preferred_mag = mag
 
         for i in range(org.arrivalCount()):
             arr = org.arrival(i)
@@ -453,6 +456,7 @@ class EventWatch(EventClient):
             if pick.phaseHint().code()[0] != "P":
                 continue
 
+            p_count += 1
             wf = pick.waveformID()
 
             try:
@@ -460,7 +464,7 @@ class EventWatch(EventClient):
                 sta = wf.stationCode()
                 loc = wf.locationCode()
                 cha = wf.channelCode()
-                me = self.__me.compute(net, sta, loc, cha, mag.magnitude().value(), org.latitude().value(), org.longitude().value(), org.depth().value(), pick.time().value())
+                me = self.__me.compute(net, sta, loc, cha, preferred_mag.magnitude().value(), org.latitude().value(), org.longitude().value(), org.depth().value(), pick.time().value())
 
                 if not (me > 0 and me < 10):
                     info("%s.%s.%s.%s Me = %f (invalid)" % (net, sta, loc, cha, me))
@@ -470,7 +474,7 @@ class EventWatch(EventClient):
                     info("%s.%s.%s.%s Me = %f" % (net, sta, loc, cha, me))
 
             except Exception as e:
-                info("%s.%s.%s.%s Error = %s" % (net, sta, loc, cha, str(e)))
+                info("%s.%s.%s.%s skipped: %s" % (net, sta, loc, cha, str(e)))
                 continue
 
             sm = seiscomp.datamodel.StationMagnitude.Create()
@@ -546,7 +550,12 @@ class EventWatch(EventClient):
         if msg:
             self.connection().send("MAGNITUDE", msg)
 
-        return
+        if len(smList) > 0:
+            info("EVT %s: Me=%.2f +/-%.2f from %d/%d P stations" % (
+                evid, mean, stdev if stdev is not None else 0.0,
+                sum(w > 0 for w in weight), p_count))
+        else:
+            info("EVT %s: no valid Me stations (0/%d P arrivals)" % (evid, p_count))
 
     def changed_origin(self, event_id, previous_id, current_id):
         debug("EventWatch.changed_origin")

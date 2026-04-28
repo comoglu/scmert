@@ -33,7 +33,7 @@ amp_ratio_threshold: 0.8
 
 preprocess:
   bandpass_corners: 2
-  bandpass_freq_max: 10
+  bandpass_freq_max: 1.0  # above 1 Hz SNR is poor for teleseismic P-waves (Di Giacomo et al., 2008)
   bandpass_max_nyquist_ratio: 0.9
   remove_response_output: VEL
   remove_response_water_level: 40

@@ -171,7 +171,8 @@ def compute_me(waveform, mag, event_depth_km, inventory, arrival_time,
     
     v_cost_p = (1. /(15. * pi * v_dens * (v_pwave ** 5)))
     v_cost_s = (1. /(10. * pi * v_dens * (v_swave ** 5)))
-    # below I put a factor 2 but ... we don't know yet if it is needed
+    # Factor 2: one-sided spectrum (f > 0 only) requires doubling to recover
+    # total energy via Parseval's theorem (Di Giacomo et al., 2008, eq. 1).
     energy = 2 * (v_cost_p + v_cost_s) * corrected_spectrum_int_vel_square
     me_st = (2./3.) * (np.log10(energy) - 4.4)
 
