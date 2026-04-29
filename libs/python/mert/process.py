@@ -12,6 +12,11 @@ from .stream2segment.traces import (ampratio, bandpass, ampspec, powspec,
                                     sn_split)
 import yaml
 
+try:
+    from sdaas.core import trace_score as _sdaas_trace_score
+except ImportError:
+    _sdaas_trace_score = None
+
 
 class SkipSegment(Exception):
     """Implement a SkipSegment exception (legacy code of Stream2segment)"""
@@ -86,7 +91,10 @@ def compute_me(waveform, mag, event_depth_km, inventory, arrival_time,
     # For future developments, we might use konno ohmaci
 
     fcmin = 0.001  # 20s, integration for Energy starts from 16s
-    fcmax = config['preprocess']['bandpass_freq_max']  # used in bandpass_remresp
+    # Cap SNR at 1.0 Hz to match the Me integration range (freq_dist_table max);
+    # bandpass_freq_max (10 Hz) is kept wider for response removal quality.
+    fcmax = min(config['preprocess']['bandpass_freq_max'],
+                config['freq_dist_table']['frequencies'][-1])
     snr_ = snr(normal_spe, noise_spe, signals_form=config['sn_spectra']['type'],
                fmin=fcmin, fmax=fcmax, delta_signal=normal_df, delta_noise=noise_df)
     
@@ -182,15 +190,16 @@ def compute_me(waveform, mag, event_depth_km, inventory, arrival_time,
     # AMPLITUDE ANOMALY SCORE #
     ###########################
 
-    # (if uncommented, it should be done on the unprocessed trace before response
-    # removal or bandpas)
+    # sdaas scores waveforms 0 (good) to 1 (anomalous); install the sdaas
+    # package to enable this quality filter (me-compute reference implementation).
+    anomaly_score = float('nan')
+    if _sdaas_trace_score is not None:
+        try:
+            anomaly_score = _sdaas_trace_score(waveform[0], inventory)
+        except Exception:
+            pass
 
-    # try:
-    #     aascore = trace_score(trace, segment.inventory())
-    # except Exception as exc:
-    #     aascore = np.nan
-
-    return me_st
+    return me_st, anomaly_score
 
 
 def bandpass_remresp(trace, inventory, config):

@@ -226,5 +226,6 @@ class Me(object):
                              (wf[0].stats.starttime, wf[0].stats.endtime,
                               t - dur, t + dur))
 
-        return compute_me(wf, mag, depth, inv, t, dist, self.__config)
+        me, anomaly_score = compute_me(wf, mag, depth, inv, t, dist, self.__config)
+        return me, anomaly_score
 

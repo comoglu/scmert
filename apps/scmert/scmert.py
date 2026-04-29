@@ -329,40 +329,30 @@ class EventClient(Application):
             debug("addObject end")
 
 
-def trimmedMean(values, percent):
-    # Derived from:
-    # https://github.com/SeisComP/common/blob/c2d63ec5226b879380d24f3dde7348ab47519b63/libs/seiscomp/math/mean.cpp#L129
-
-    xl = percent * 0.005
+def percentileMean(values, plow=5, phigh=95):
+    """Mean and stddev of values within [plow, phigh] percentile range.
+    Matches the aggregation used in me-compute (Di Giacomo et al. reference implementation).
+    Returns (mean, stdev, included) where included[i] is True if values[i] was used."""
     n = len(values)
-    k = int(n * xl + 1e-5)
-    cumv = cumw = cumd = 0
-    dv = n*[0]
-    weight = n*[0]
+    if n == 0:
+        return None, None, []
+    sorted_vals = sorted(values)
 
-    for i, (j, v) in enumerate(sorted(enumerate(values),
-                                      key=lambda a: a[1])):
-        if k + 1 <= i < n - k - 1:
-            weight[j] = 1
+    def _percentile(data, p):
+        idx = (len(data) - 1) * p / 100.0
+        lo, hi = int(idx), min(int(idx) + 1, len(data) - 1)
+        return data[lo] + (idx - lo) * (data[hi] - data[lo])
 
-        elif i == k or i == n - k - 1:
-            weight[j] = k + 1 - n * xl
-
-        else:
-            weight[j] = 0
-
-        cumv += weight[j] * values[j]
-        cumw += weight[j]
-
-    v = cumv / cumw
-
-    for i in range(n):
-        dv[i] = values[i] - v
-        cumd += weight[i] * dv[i] * dv[i];
-
-    stdev = math.sqrt(cumd / (cumw - 1)) if cumw > 1 else None
-
-    return v, stdev, dv, weight
+    p_low  = _percentile(sorted_vals, plow)
+    p_high = _percentile(sorted_vals, phigh)
+    included = [p_low <= v <= p_high for v in values]
+    filtered = [v for v, inc in zip(values, included) if inc]
+    if not filtered:
+        return None, None, included
+    mean = sum(filtered) / len(filtered)
+    stdev = math.sqrt(sum((v - mean) ** 2 for v in filtered) / (len(filtered) - 1)) \
+        if len(filtered) > 1 else None
+    return mean, stdev, included
 
 
 class EventWatch(EventClient):
@@ -464,14 +454,14 @@ class EventWatch(EventClient):
                 sta = wf.stationCode()
                 loc = wf.locationCode()
                 cha = wf.channelCode()
-                me = self.__me.compute(net, sta, loc, cha, preferred_mag.magnitude().value(), org.latitude().value(), org.longitude().value(), org.depth().value(), pick.time().value())
+                me, anomaly_score = self.__me.compute(net, sta, loc, cha, preferred_mag.magnitude().value(), org.latitude().value(), org.longitude().value(), org.depth().value(), pick.time().value())
 
                 if not (me > 0 and me < 10):
                     info("%s.%s.%s.%s Me = %f (invalid)" % (net, sta, loc, cha, me))
                     continue
 
-                else:
-                    info("%s.%s.%s.%s Me = %f" % (net, sta, loc, cha, me))
+                score_str = " anomaly=%.2f" % anomaly_score if anomaly_score == anomaly_score else ""
+                info("%s.%s.%s.%s Me = %f%s" % (net, sta, loc, cha, me, score_str))
 
             except Exception as e:
                 info("%s.%s.%s.%s skipped: %s" % (net, sta, loc, cha, str(e)))
@@ -506,18 +496,18 @@ class EventWatch(EventClient):
             smList.append(sm)
 
         if len(smList) > 0:
-            percent = 25 # XXX: hardcoded
             values = [sm.magnitude().value() for sm in smList]
-            (mean, stdev, residual, weight) = trimmedMean(values, percent)
+            (mean, stdev, included) = percentileMean(values)
             mag = seiscomp.datamodel.Magnitude.Create()
             mag.setOriginID(org.publicID())
             m = seiscomp.datamodel.RealQuantity()
             m.setValue(mean)
-            m.setUncertainty(stdev)
+            if stdev is not None:
+                m.setUncertainty(stdev)
             mag.setMagnitude(m)
             mag.setType("Me")
-            mag.setMethodID("trimmed mean(%d)" % percent)
-            mag.setStationCount(sum(w>0 for w in weight))
+            mag.setMethodID("percentile mean(5-95)")
+            mag.setStationCount(sum(included))
             ci = seiscomp.datamodel.CreationInfo()
             ci.setCreationTime(seiscomp.core.Time().GMT())
             ci.setAgencyID(self.agencyID())
@@ -535,8 +525,8 @@ class EventWatch(EventClient):
             for i, sm in enumerate(smList):
                 smc = seiscomp.datamodel.StationMagnitudeContribution()
                 smc.setStationMagnitudeID(sm.publicID())
-                smc.setResidual(residual[i])
-                smc.setWeight(weight[i])
+                smc.setResidual(values[i] - mean)
+                smc.setWeight(1.0 if included[i] else 0.0)
 
                 try:
                     notifierEnabled = seiscomp.datamodel.Notifier.IsEnabled()
@@ -553,7 +543,7 @@ class EventWatch(EventClient):
         if len(smList) > 0:
             info("EVT %s: Me=%.2f +/-%.2f from %d/%d P stations" % (
                 evid, mean, stdev if stdev is not None else 0.0,
-                sum(w > 0 for w in weight), p_count))
+                sum(included), p_count))
         else:
             info("EVT %s: no valid Me stations (0/%d P arrivals)" % (evid, p_count))
 
